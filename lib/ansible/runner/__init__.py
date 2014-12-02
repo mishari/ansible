@@ -667,8 +667,22 @@ class Runner(object):
     def _executor_internal(self, host, new_stdin):
         ''' executes any module one or more times '''
 
+        # We build the proper injected dictionary for all future
+        # templating operations in this run
         inject = self.get_inject_vars(host)
-        hostvars = HostVars(inject['combined_cache'], self.inventory, vault_password=self.vault_pass)
+
+        # Then we selectively merge some variable dictionaries down to a
+        # single dictionary, used to template the HostVars for this host
+        temp_vars = self.inventory.get_variables(host, vault_password=self.vault_pass)
+        temp_vars = utils.merge_hash(temp_vars, inject['combined_cache'])
+        temp_vars = utils.merge_hash(temp_vars, self.play_vars)
+        temp_vars = utils.merge_hash(temp_vars, self.play_file_vars)
+        temp_vars = utils.merge_hash(temp_vars, self.extra_vars)
+
+        hostvars = HostVars(temp_vars, self.inventory, vault_password=self.vault_pass)
+
+        # and we save the HostVars in the injected dictionary so they
+        # may be referenced from playbooks/templates
         inject['hostvars'] = hostvars
 
         host_connection = inject.get('ansible_connection', self.transport)
@@ -723,18 +737,21 @@ class Runner(object):
             # strip out any jinja2 template syntax within
             # the data returned by the lookup plugin
             items = utils._clean_data_struct(items, from_remote=True)
-            if type(items) != list:
-                raise errors.AnsibleError("lookup plugins have to return a list: %r" % items)
+            if items is None:
+                items = []
+            else:
+                if type(items) != list:
+                    raise errors.AnsibleError("lookup plugins have to return a list: %r" % items)
 
-            if len(items) and utils.is_list_of_strings(items) and self.module_name in [ 'apt', 'yum', 'pkgng', 'zypper' ]:
-                # hack for apt, yum, and pkgng so that with_items maps back into a single module call
-                use_these_items = []
-                for x in items:
-                    inject['item'] = x
-                    if not self.conditional or utils.check_conditional(self.conditional, self.basedir, inject, fail_on_undefined=self.error_on_undefined_vars):
-                        use_these_items.append(x)
-                inject['item'] = ",".join(use_these_items)
-                items = None
+                if len(items) and utils.is_list_of_strings(items) and self.module_name in [ 'apt', 'yum', 'pkgng', 'zypper' ]:
+                    # hack for apt, yum, and pkgng so that with_items maps back into a single module call
+                    use_these_items = []
+                    for x in items:
+                        inject['item'] = x
+                        if not self.conditional or utils.check_conditional(self.conditional, self.basedir, inject, fail_on_undefined=self.error_on_undefined_vars):
+                            use_these_items.append(x)
+                    inject['item'] = ",".join(use_these_items)
+                    items = None
 
         def _safe_template_complex_args(args, inject):
             # Ensure the complex args here are a dictionary, but
